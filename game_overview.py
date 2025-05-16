@@ -2,18 +2,31 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-sns.set_theme(style="whitegrid")
 import requests
 from scipy.stats import chi2_contingency, fisher_exact
 from statsmodels.stats.proportion import proportions_ztest
 # better table views
 from IPython.display import display
+# Chess game parser
+import chess.pgn
+from io import StringIO
 
+
+# Utility functions
+
+def fetch_json(url):
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code == 200:
+        return response.json()
+    else:
+        print(f"Error: {response.status_code}")
+        return {}
 
 class PlayerGamesOverview:
     def __init__(self, username):
         self.link = f'https://api.chess.com/pub/player/{username}/games'
-        self.headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         self.username = username
         self.game_values = {
                             'checkmated': -1, 
@@ -32,12 +45,14 @@ class PlayerGamesOverview:
     def get_data(self, year, month):
         month = str(month).zfill(2)  # Ensure month is two digits
         url = f'{self.link}/{year}/{month}'
-        response = requests.get(url, headers=self.headers)
-        if response.status_code == 200:    
-            data = response.json()
-            return self.create_player_games_table(data)
-        else:
-         print(f"Error: {response.status_code}")
+        
+        self.create_player_games_table(fetch_json(url))
+        # response = requests.get(url, headers=self.headers)
+        # if response.status_code == 200:    
+        #     data = response.json()
+        #     return self.create_player_games_table(data)
+        # else:
+        #  print(f"Error: {response.status_code}")
     
     def create_player_games_table(self, df):
         games_data = []
@@ -75,8 +90,8 @@ class PlayerGamesOverview:
                                         margins_name='Sum').fillna(0).astype(int).reset_index()
         
         # top weak and strong games
-        top_weak = result_vs_opening.sort_values(by=-1, ascending=False)[1:11]
-        top_strong = result_vs_opening.sort_values(by=1, ascending=False)[1:11]
+        top_weak = result_vs_opening.sort_values(by=-1, ascending=False)[0:11]
+        top_strong = result_vs_opening.sort_values(by=1, ascending=False)[0:11]
         
         # win rate
         sum_row = result_vs_opening[result_vs_opening['Opening'] == 'Sum']
@@ -151,8 +166,113 @@ class PlayerGamesOverview:
         plt.xlabel('Opponent Rating')
         plt.ylabel('Frequency')
         plt.show()
+    # TODO -- when we want the user to choose now we go an easy way to build the structure.
+# self.months = {
+#     1: 'January', 2: 'February', 3: 'March', 4: 'April',
+#     5: 'May', 6: 'June', 7: 'July', 8: 'August',
+#     9: 'September', 10: 'October', 11: 'November', 12: 'December'
+# }
+
+class GameArchives:
+    """
+    A class to play around with Chess.com player game archives.
+    """
+    
+    def __init__(self, username):
+        self.link = f'https://api.chess.com/pub/player/{username}/games/archives'
+        self.username = username
+        self.archives = []
+        
+    
+    def get_latest_games(self):
+        """
+        Fetch latest month's game archives of the player.
+        """
+        game_list = fetch_json(self.link)
+        if not game_list:
+            raise ValueError("Could not fetch archives.")
+        
+        last_url = game_list['archives'][-1]
+        game_data = fetch_json(last_url)
+        if not game_data:
+            raise ValueError("Could not fetch latest games.")
+        
+        self.game = game_data
+        return self.game
+    
+    def add_moves_to_game(self):
+        """
+        Add moves to the game data.
+        """
+        games = self.game['games']
+        
+        for game in games:
+            game['Moves'] = self.game_parser(game['pgn'])['Moves']
+            
+        return self.game
+        
+
+    @staticmethod
+    def game_parser(pgn_text):
+        """
+        Parse a PGN string and return the game object.
+        Requires a valid PGN string.
+        """
+        pgn_io = StringIO(pgn_text)
+        game = chess.pgn.read_game(pgn_io)
+        
+        Moves = GameArchives.iterate_moves(game)
+        
+        return {
+            'game': game,
+            'Event': game.headers.get("Event"),
+            'White': game.headers.get("White"),
+            'Black': game.headers.get("Black"),
+            'Result': game.headers.get("Result"),
+            'Date': game.headers.get("Date"),
+            'White Elo': game.headers.get("WhiteElo"),
+            'Black Elo': game.headers.get("BlackElo"),
+            'Link': game.headers.get("Link"),
+            'Moves': Moves
+        }
+
+
+    @staticmethod
+    def iterate_moves(game):
+        """
+        Iterate through moves in a game.
+        Each move_id is shared by a White and Black move.
+        """
+        res = []
+        board = game.board()
+        full_move_id = 1  # incremented every 2 half-moves
+
+        for i, move in enumerate(game.mainline_moves()):
+            color = 'White' if board.turn == chess.WHITE else 'Black'
+
+            res.append({
+                'move_id': full_move_id,
+                'color': color,
+                'notation': board.san(move)
+            })
+
+            board.push(move)
+
+            # Only increment after Black's move
+            if color == 'Black':
+                full_move_id += 1
+
+        return res
+
+    
+    
 
 if __name__ == "__main__":
-    pgo = PlayerGamesOverview("frezaeei")
+    pgo = PlayerGamesOverview("Frezaeei")
     df = pgo.get_data(2025, 5)
     print(df.head())
+    
+    ga = GameArchives('Frezaeei')
+    ga.get_latest_games()
+    res = ga.add_moves_to_game()
+    print(res)
