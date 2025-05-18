@@ -3,6 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import requests
+import re
+import datetime
 from scipy.stats import chi2_contingency, fisher_exact
 from statsmodels.stats.proportion import proportions_ztest
 # better table views
@@ -13,6 +15,8 @@ from io import StringIO
 
 
 # Utility functions
+sns.set(style="darkgrid")
+
 
 def fetch_json(url):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -166,7 +170,8 @@ class PlayerGamesOverview:
         plt.xlabel('Opponent Rating')
         plt.ylabel('Frequency')
         plt.show()
-    # TODO -- when we want the user to choose now we go an easy way to build the structure.
+    
+# TODO -- when we want the user to choose now we go an easy way to build the structure.
 # self.months = {
 #     1: 'January', 2: 'February', 3: 'March', 4: 'April',
 #     5: 'May', 6: 'June', 7: 'July', 8: 'August',
@@ -175,7 +180,7 @@ class PlayerGamesOverview:
 
 class GameArchives:
     """
-    A class to play around with Chess.com player game archives.
+    Fetch the last month of games data for a given player. This class g
     """
     
     def __init__(self, username):
@@ -240,30 +245,113 @@ class GameArchives:
     @staticmethod
     def iterate_moves(game):
         """
-        Iterate through moves in a game.
-        Each move_id is shared by a White and Black move.
+        Iterate through moves in a game, attaching move_id, color, notation, and optional clock time.
         """
         res = []
         board = game.board()
-        full_move_id = 1  # incremented every 2 half-moves
+        move_id = 1
 
         for i, move in enumerate(game.mainline_moves()):
             color = 'White' if board.turn == chess.WHITE else 'Black'
+            san = board.san(move)
+
+            node = game.end()
+            current_node = game
+            for _ in range(i):
+                current_node = current_node.variations[0]
+
+            clock_time = current_node.comment.strip() if "Clock" in current_node.comment else None
 
             res.append({
-                'move_id': full_move_id,
+                'move_id': move_id,
                 'color': color,
-                'notation': board.san(move)
+                'notation': san,
+                'clock': clock_time
             })
 
             board.push(move)
-
-            # Only increment after Black's move
             if color == 'Black':
-                full_move_id += 1
+                move_id += 1
 
         return res
-
+    
+class BasicChartsYearly:
+    """
+    A class to analyze win rates per month.
+    """
+    
+    def __init__(self, username):
+        self.username = username
+        self.link = f'https://api.chess.com/pub/player/{username}/games/archives'
+        self.pgo = PlayerGamesOverview(username)
+        
+        archive_data = fetch_json(self.link)
+        urls = archive_data.get('archives', [])
+        self.year_month = [tuple(url.strip('/').split('/')[-2:]) for url in urls]
+        
+        
+    
+    def get_monthly_data(self):
+        """
+        Calculate the win rate for each month.
+        """
+        monthly_data = []
+        
+        for _, (year, month) in enumerate(self.year_month):
+            year = int(year)
+            month = int(month)
+            try:
+                self.pgo.get_data(year, month)
+                monthly_data.append({'year': year, 'month': month, 'win_rate_obj': self.pgo.win_rate()})
+            except Exception as e:
+                print(f"Skipped {year}-{month:02d}: {e}")
+                
+        monthly_data_df = pd.DataFrame(monthly_data)
+        win_rate_broken = monthly_data_df['win_rate_obj'].apply(pd.Series)
+        self.monthly_data_cleaned = monthly_data_df.join(win_rate_broken).drop(columns=['win_rate_obj'])
+        
+        return self.monthly_data_cleaned
+    
+    def base_plots(self):
+        """
+        Creates two base plots. Total games and win rate per year. Returns a df of the processed data.
+        """
+        df = self.get_monthly_data()
+        total_games_yearly = df.groupby('year').agg({
+            'total_games': 'sum',
+            'total_wins': 'sum'
+        })
+        
+        # create a year df that has all of the years from the first year to now.
+        full_years = pd.Series(range(df['year'].min(), datetime.datetime.now().year + 1), name='year')
+        total_games_yearly = total_games_yearly.reindex(full_years, fill_value=0)
+        
+        # win rate per date
+        total_games_yearly['win_rate'] = round(total_games_yearly['total_wins'] / total_games_yearly['total_games'].replace(0,1) * 100, 2)
+        # total win rate
+        total_win_rate = round(total_games_yearly['total_wins'].sum() / total_games_yearly['total_games'].sum() * 100, 4)
+        
+        # Chart 1 Total games played per year
+        ax1 = plt.figure(figsize=(10, 5))
+        ax1 = sns.barplot(x=total_games_yearly.index, y=total_games_yearly['total_games'], palette='colorblind')
+        ax1.set_title('Total Games Played Per Year')
+        ax1.set_xlabel('Year')
+        ax1.set_ylabel('Total Games')
+        plt.xticks(rotation=45)
+        plt.show()
+        
+        # Chart 2 Win rate per year
+        ax2 = plt.figure(figsize=(10, 5))
+        ax2 = sns.lineplot(x=total_games_yearly.index, y=total_games_yearly['win_rate'], marker='o', color='orange')
+        ax2.set_title('Win Rate Per Year')
+        ax2.set_xlabel('Year')
+        ax2.set_ylabel('Win Rate (%)')
+        ax2.set_ylim(0, 100)
+        plt.xticks(rotation=45)
+        plt.show()
+        
+        return {'all_data':total_games_yearly, 'total_win_rate': total_win_rate}
+    
     
     
 
@@ -274,5 +362,9 @@ if __name__ == "__main__":
     
     ga = GameArchives('Frezaeei')
     ga.get_latest_games()
-    res = ga.add_moves_to_game()
-    print(res)
+    game_archives = ga.add_moves_to_game()
+    print(game_archives)
+    
+    bsy = BasicChartsYearly('Frezaeei')
+    basic_charts_data = bsy.base_plots()
+    print(basic_charts_data)
