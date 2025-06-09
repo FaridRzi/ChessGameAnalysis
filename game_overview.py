@@ -47,10 +47,12 @@ class PlayerGamesOverview:
                             }
     
     def get_data(self, year, month):
+        """Return a DataFrame of the player's games for the given month."""
         month = str(month).zfill(2)  # Ensure month is two digits
         url = f'{self.link}/{year}/{month}'
-        
-        self.create_player_games_table(fetch_json(url))
+
+        data = fetch_json(url)
+        return self.create_player_games_table(data)
         # response = requests.get(url, headers=self.headers)
         # if response.status_code == 200:    
         #     data = response.json()
@@ -80,8 +82,28 @@ class PlayerGamesOverview:
         self.df_games = pd.DataFrame(games_data)
         self.df_games["Date"] = pd.to_datetime(self.df_games["Date"], unit='s')
         self.df_games['game_value'] = self.df_games['Result'].map(self.game_values).astype(int)
-        
+
         return self.df_games
+
+    def win_rate(self):
+        """Return win/loss/draw counts and win rate for the loaded games."""
+        if not hasattr(self, 'df_games'):
+            raise ValueError("No games loaded. Call get_data first.")
+
+        total_games = len(self.df_games)
+        total_wins = (self.df_games['game_value'] == 1).sum()
+        total_losses = (self.df_games['game_value'] == -1).sum()
+        total_draws = (self.df_games['game_value'] == 0).sum()
+        win_rate = total_wins / total_games if total_games else 0
+
+        return {
+            'total_games': int(total_games),
+            'total_wins': int(total_wins),
+            'total_losses': int(total_losses),
+            'total_draws': int(total_draws),
+            'win_rate': win_rate,
+            'win_rate_100_base': win_rate * 100
+        }
     
     def analyze_res_vs_opening(self):
         
